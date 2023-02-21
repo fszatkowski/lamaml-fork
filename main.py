@@ -114,11 +114,7 @@ def life_experience(model, inc_loader, args):
             result_test_a.append(evaluator(model, test_tasks, args))
             result_test_t.append(task_info["task"])
 
-        # TODO prob to update when we move from simple LwF to more complicated strategy
         model.teacher = deepcopy(model.net)
-        model.teacher.eval()
-        for param in model.teacher.parameters():
-            param.requires_grad = False
 
     print("####Final Validation Accuracy####")
     print("Final Results:- \n Total Accuracy: {} \n Individual Accuracy: {}".format(sum(result_val_a[-1])/len(result_val_a[-1]), result_val_a[-1]))

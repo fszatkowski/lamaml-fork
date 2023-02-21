@@ -70,42 +70,57 @@ class Net(BaseNet):
             output[:, int(offset2):self.n_outputs].data.fill_(-10e10)
         return output
 
-    def meta_loss(self, x, fast_weights, y, bt, t):
+    def meta_loss(self, x, fast_weights_student, fast_weights_teacher, y, bt, t):
         """
         differentiate the loss through the network updates wrt alpha
         """
 
         offset1, offset2 = self.compute_offsets(t)
 
-        logits = self.net.forward(x, fast_weights)
+        logits = self.net.forward(x, fast_weights_student)
         loss = self.take_multitask_loss(bt, t, logits[:, :offset2], y)
         if t > 0:
             with torch.no_grad():
-                targets = self.teacher.forward(x)
+                targets = self.teacher.forward(x, fast_weights_teacher)
             loss += self.lamb * self.lwf_loss(t, logits[:, :offset1], targets[:, :offset1])
 
         return loss, logits[:, :offset2]
 
-    def inner_update(self, x, fast_weights, y, t):
+    def inner_update(self, x, fast_weights_student, fast_weights_teacher, y, t):
         """
         Update the fast weights using the current samples and return the updated fast
         """
 
         offset1, offset2 = self.compute_offsets(t)            
 
-        logits = self.net.forward(x, fast_weights)
-        loss = self.take_loss(t, logits[:, :offset2], y)
+        logits = self.net.forward(x, fast_weights_student)
+        loss_student = self.take_loss(t, logits[:, :offset2], y)
         if t > 0:
             with torch.no_grad():
-                targets = self.teacher.forward(x)
-            loss += self.lamb * self.lwf_loss(t, logits[:, :offset1], targets[:, :offset1])
+                targets = self.teacher.forward(x, fast_weights_teacher)
+            loss_student += self.lamb * self.lwf_loss(t, logits[:, :offset1], targets[:, :offset1])
 
-        if fast_weights is None:
-            fast_weights = self.net.parameters()
+        if t > 0:
+            with torch.no_grad():
+                logits = self.net.forward(x, fast_weights_student)
+            loss_teacher = self.take_loss(t, logits[:, :offset2], y)
+            targets = self.teacher.forward(x, fast_weights_teacher)
+            loss_teacher += self.lamb * self.lwf_loss(t, logits[:, :offset1], targets[:, :offset1])
 
+            if fast_weights_teacher is None:
+                fast_weights_teacher = self.teacher.parameters()
+            fast_weights_teacher = self.update_fast_weights(loss_teacher, fast_weights_teacher)
+
+        if fast_weights_student is None:
+            fast_weights_student = self.net.parameters()
+        fast_weights_student = self.update_fast_weights(loss_student, fast_weights_student)
+
+        return fast_weights_student, fast_weights_teacher
+
+    def update_fast_weights(self, loss, fast_weights):
         # NOTE if we want higher order grads to be allowed, change create_graph=False to True
         graph_required = self.args.second_order
-        grads = list(torch.autograd.grad(loss, fast_weights, create_graph=graph_required, retain_graph=graph_required))
+        grads = list(torch.autograd.grad(loss, fast_weights, create_graph=graph_required, retain_graph=graph_required, allow_unused=True))
 
         for i in range(len(grads)):
             grads[i] = torch.clamp(grads[i], min = -self.args.grad_clip_norm, max = self.args.grad_clip_norm)
@@ -133,7 +148,7 @@ class Net(BaseNet):
             batch_sz = x.shape[0]
             n_batches = self.args.cifar_batches
             rough_sz = math.ceil(batch_sz/n_batches)
-            fast_weights = None
+            fast_weights_student, fast_weights_teacher = None, None
             meta_losses = [0 for _ in range(n_batches)]
 
             # get a batch by augmented incming data with old task data, used for 
@@ -146,12 +161,12 @@ class Net(BaseNet):
                 batch_y = y[i*rough_sz : (i+1)*rough_sz]
 
                 # assuming labels for inner update are from the same 
-                fast_weights = self.inner_update(batch_x, fast_weights, batch_y, t)
+                fast_weights_student, fast_weights_teacher = self.inner_update(batch_x, fast_weights_student, fast_weights_teacher, batch_y, t)
                 # only sample and push to replay buffer once for each task's stream
                 # instead of pushing every epoch     
                 if(self.real_epoch == 0):
                     self.push_to_mem(batch_x, batch_y, torch.tensor(t))
-                meta_loss, logits = self.meta_loss(bx, fast_weights, by, bt, t)
+                meta_loss, logits = self.meta_loss(bx, fast_weights_student, fast_weights_teacher, by, bt, t)
                 
                 meta_losses[i] += meta_loss
 
