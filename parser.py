@@ -90,6 +90,8 @@ def get_parser():
                         help='model should update the LRs during learning')
     parser.add_argument('--sync_update', default=False , action='store_true',
                         help='the LRs and weights should be updated synchronously')
+    parser.add_argument('--lwf_lambda', default=1, type=float,
+                        help='lambda for LwF loss')
 
     parser.add_argument('--grad_clip_norm', type=float, default=2.0,
                         help='Clip the gradients by this value')

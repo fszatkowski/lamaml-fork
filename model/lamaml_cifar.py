@@ -16,7 +16,10 @@ class Net(BaseNet):
                                  n_outputs,
                                  n_tasks,           
                                  args)
+        self.teacher = None
+        self.lamb = args.lwf_lambda
         self.nc_per_task = n_outputs / n_tasks
+
 
     def take_loss(self, t, logits, y):
         # compute loss on data from a single task
@@ -24,6 +27,24 @@ class Net(BaseNet):
         loss = self.loss(logits[:, offset1:offset2], y-offset1)
 
         return loss
+
+    def lwf_loss(self, t, outputs, targets, exp=2, size_average=True, eps=1e-5):
+        # Copied from FACIL
+        assert outputs.shape == targets.shape
+
+        out = torch.nn.functional.softmax(outputs, dim=1)
+        tar = torch.nn.functional.softmax(targets, dim=1)
+        if exp != 1:
+            out = out.pow(exp)
+            out = out / out.sum(1).view(-1, 1).expand_as(out)
+            tar = tar.pow(exp)
+            tar = tar / tar.sum(1).view(-1, 1).expand_as(tar)
+        out = out + eps / out.size(1)
+        out = out / out.sum(1).view(-1, 1).expand_as(out)
+        ce = -(tar * out.log()).sum(1)
+        if size_average:
+            ce = ce.mean()
+        return ce
 
     def take_multitask_loss(self, bt, t, logits, y):
         # compute loss on data from a multiple tasks
@@ -56,10 +77,14 @@ class Net(BaseNet):
 
         offset1, offset2 = self.compute_offsets(t)
 
-        logits = self.net.forward(x, fast_weights)[:, :offset2]
-        loss_q = self.take_multitask_loss(bt, t, logits, y)
+        logits = self.net.forward(x, fast_weights)
+        loss = self.take_multitask_loss(bt, t, logits[:, :offset2], y)
+        if t > 0:
+            with torch.no_grad():
+                targets = self.teacher.forward(x)
+            loss += self.lamb * self.lwf_loss(t, logits[:, :offset1], targets[:, :offset1])
 
-        return loss_q, logits
+        return loss, logits[:, :offset2]
 
     def inner_update(self, x, fast_weights, y, t):
         """
@@ -68,8 +93,12 @@ class Net(BaseNet):
 
         offset1, offset2 = self.compute_offsets(t)            
 
-        logits = self.net.forward(x, fast_weights)[:, :offset2]
-        loss = self.take_loss(t, logits, y)
+        logits = self.net.forward(x, fast_weights)
+        loss = self.take_loss(t, logits[:, :offset2], y)
+        if t > 0:
+            with torch.no_grad():
+                targets = self.teacher.forward(x)
+            loss += self.lamb * self.lwf_loss(t, logits[:, :offset1], targets[:, :offset1])
 
         if fast_weights is None:
             fast_weights = self.net.parameters()
@@ -117,12 +146,12 @@ class Net(BaseNet):
                 batch_y = y[i*rough_sz : (i+1)*rough_sz]
 
                 # assuming labels for inner update are from the same 
-                fast_weights = self.inner_update(batch_x, fast_weights, batch_y, t)   
+                fast_weights = self.inner_update(batch_x, fast_weights, batch_y, t)
                 # only sample and push to replay buffer once for each task's stream
                 # instead of pushing every epoch     
                 if(self.real_epoch == 0):
                     self.push_to_mem(batch_x, batch_y, torch.tensor(t))
-                meta_loss, logits = self.meta_loss(bx, fast_weights, by, bt, t) 
+                meta_loss, logits = self.meta_loss(bx, fast_weights, by, bt, t)
                 
                 meta_losses[i] += meta_loss
 
