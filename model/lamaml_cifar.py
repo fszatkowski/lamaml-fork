@@ -1,6 +1,5 @@
 import random
 import numpy as np
-import ipdb
 import math
 import torch
 import torch.nn as nn
@@ -86,7 +85,6 @@ class Net(BaseNet):
             map(lambda p: p[1][0] - p[0] * p[1][1], zip(grads, zip(fast_weights, self.net.alpha_lr))))
 
         return fast_weights
-
 
     def observe(self, x, y, t):
         self.net.train() 

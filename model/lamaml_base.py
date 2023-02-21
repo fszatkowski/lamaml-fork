@@ -1,7 +1,6 @@
 import random
 from random import shuffle
 import numpy as np
-import ipdb
 import math
 import torch
 from torch.autograd import Variable
